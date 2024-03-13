@@ -19,9 +19,9 @@ def t(A, k, l):
     arg.append(tau)
     return arg
 
-A = np.array([[1, (2)**0.5, 2],
-              [2**0.5, 3, 2**0.5],
-              [2, 2**0.5, 1]], dtype=float)
+A = np.array([[2, 3, 6],
+              [3, 4, 5],
+              [6, 5, 9]], dtype=float)
 arg = []
 
 
@@ -41,18 +41,19 @@ while True:
     
     # finding A'kk, A'kl,A'lk
     
-    if abs(A[k, l]) > 0.00001:
+    if abs(A[k, l]) > 0.001:
         arg = t(A, k, l)
-        A[k, k] = A[k, k] - arg[1] * A[k, l]
-        A[l, l] = A[l, l] + arg[1] * A[k, l]
-        A[k, l] = A[l, k] = 0
+        new_A = A.copy()
+        new_A[k, k] = A[k, k] - arg[1] * A[k, l]
+        new_A[l, l] = A[l, l] + arg[1] * A[k, l]
+        new_A[k, l] = new_A[l, k] = 0
         #finding the other elements
         for i in range(n):
             if i != k and i != l:
-                A[l, i] = A[i,l] = A[l, i] + arg[3] * (A[k, i] - arg[4] * A[l, i])
-                A[k, i] = A[i,k] = A[k, i] - arg[3] * (A[l, i] + arg[4] * A[k, i])
-        print(A)
+                new_A[l, i] = new_A[i,l] = A[l, i] + arg[3] * (A[k, i] - arg[4] * A[l, i])
+                new_A[k, i] = new_A[i,k] = A[k, i] - arg[3] * (A[l, i] + arg[4] * A[k, i])
+        A = new_A
     else:
         break
-print(A)
 
+print(A)
