@@ -1,5 +1,4 @@
 import numpy as np
-
 def jacobi_diagonalization(A):
     n = len(A)
     S = np.eye(n)  # Initialize S as the identity matrix
@@ -64,7 +63,32 @@ def jacobi_diagonalization(A):
 
     return eigenvalues, eigenvectors
 
-A = np.array([[1, 2**0.5, 2], [2**0.5, 3, 2**0.5], [2, 2**0.5, 1]], dtype=float)
+# Prompt the user to input the matrix A
+n = int(input("Enter the size of the matrix: "))
+
+print("Enter the elements of the matrix:")
+A = []
+
+for i in range(n):
+    row = []
+    for j in range(n):
+        element = input(f"Enter element at position ({i}, {j}): ")
+        if '^' in element:
+            # Split the expression into base and exponent
+            parts = element.split('^')
+            base = float(parts[0])
+            exponent = float(parts[1])
+            # Calculate the result using the '**' operator
+            result = base ** exponent
+            row.append(float(result))  # Convert the result to an integer
+        else:
+            row.append(float(element))  # Convert other elements to float
+    A.append(row)
+
+# Convert the matrix to a NumPy array
+A = np.array(A, dtype=float)
+print("Matrix A:")
+print(A)
 
 eigenvalues, eigenvectors = jacobi_diagonalization(A)
 
