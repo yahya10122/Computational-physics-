@@ -1,0 +1,73 @@
+import numpy as np
+
+def f(x, y_vec):
+    """Computes the vector f"""
+    y, z, w = y_vec
+    f = np.zeros(3)
+    f[0] = z
+    f[1] = w
+    f[2] = 2*w + 6*x*y
+    return f
+
+def rk4(x, y_vec, h):
+    """Computes the next step using the fourth-order Runge-Kutta method"""
+    k1 = h * f(x, y_vec)
+    k2 = h * f(x + h / 2, y_vec + k1 / 2)
+    k3 = h * f(x + h / 2, y_vec + k2 / 2)
+    k4 = h * f(x + h, y_vec + k3)
+    y_nplus1 = y_vec + (k1 + 2 * k2 + 2 * k3 + k4) / 6
+    return y_nplus1
+
+def solve_ode(y0, z0, w0, t_span, h):
+    """Solves the ODE using the Runge-Kutta method"""
+    a, b = t_span
+    x = a
+    N = (b - a) / h
+    y = y0
+    z = z0
+    w = w0
+    for i in range(int(N)):
+        y_vec = np.array([y, z, w])
+        y_vec_next = rk4(x, y_vec, h)
+        y, z, w = y_vec_next
+        x += h
+    return y, z, w
+
+# Initial conditions
+y0 = 2  # y(0) = 2
+z0 = 0  # y'(0) = 0
+w0 = 0.5  # Initial guess for y''(0)
+
+# Time span
+t_span = [0, 5]
+
+# Step size
+h = 0.1
+
+# Tolerance
+tol = 1e-6
+
+# Boundary conditions at t = 5
+y_boundary = 0  # y(5) = 0
+z_boundary = 0  # y'(5) = 0
+
+# Root-finding loop
+lb = -2  # Lower bound for y''(0)
+ub = 2  # Upper bound for y''(0)
+
+while True:
+    w0 = (lb + ub) / 2  # Midpoint as the new guess
+
+    # Solve the ODE
+    y_final, z_final, w_final = solve_ode(y0, z0, w0, t_span, h)
+
+    # Check if the boundary conditions are satisfied
+    if abs(y_final - y_boundary) < tol and abs(z_final - z_boundary) < tol:
+        break
+    elif y_final < y_boundary or (y_final == y_boundary and z_final < z_boundary):
+        lb = w0  # Update the lower bound
+    else:
+        ub = w0  # Update the upper bound
+
+# Print the final solution
+print(f"Final solution: y(0) = {y0}, y'(0) = {z0}, y''(0) = {w_final:.6f}")
