@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 def f(x, y_vec):
     """Computes the vector f"""
@@ -24,12 +25,16 @@ def solve_ode(y0, z0, t_span, h):
     N = (b - a) / h
     y = y0
     z = z0
+    x_values = [x]
+    y_values = [y]
     for i in range(int(N)):
         y_vec = np.array([y, z])
         y_vec_next = rk4(x, y_vec, h)
         y, z = y_vec_next
         x += h
-    return y, z
+        x_values.append(x)
+        y_values.append(y)
+    return y, z, x_values, y_values
 
 # Initial conditions
 y0 = 2  # y(1) = 2
@@ -55,7 +60,7 @@ while True:
     z0 = (lb + ub) / 2  # Midpoint as the new guess
 
     # Solve the ODE
-    y_final, z_final = solve_ode(y0, z0, t_span, h)
+    y_final, z_final, x_values, y_values = solve_ode(y0, z0, t_span, h)
 
     # Check if the boundary condition is satisfied
     if abs(y_final - y_boundary) < tol:
@@ -67,3 +72,10 @@ while True:
 
 # Print the final solution
 print(f"Final solution: y(1) = {y0}, y(2) = {y_final:.6f}, y'(2) = {z_final:.6f}")
+
+# Plot y vs x
+plt.plot(x_values, y_values)
+plt.xlabel('x')
+plt.ylabel('y')
+plt.title('Solution of the ODE')
+plt.show()
