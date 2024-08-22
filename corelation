@@ -1,0 +1,167 @@
+import cv2 as cv
+import numpy as np
+from numba import njit
+import math
+import matplotlib.pyplot as plt
+from sklearn.cluster import DBSCAN
+import os
+import time
+
+@njit
+def calculate_ellipse_area(cx, cy, a, b, angle):
+    semi_major_axis = a / 2
+    semi_minor_axis = b / 2
+    area = math.pi * semi_major_axis * semi_minor_axis
+    return area, angle
+
+def calculate_correlation(cx, cy, theta, average_angle, r_values):
+    # Convert theta and average_angle to unit vectors
+    theta_vectors = np.array([np.cos(theta), np.sin(theta)]).T
+    avg_vector = np.array([np.cos(average_angle), np.sin(average_angle)])
+
+    c_values = np.zeros_like(r_values)
+    for k, r in enumerate(r_values):
+        a = np.zeros((len(theta), len(theta)))
+        count = np.zeros((len(theta), len(theta)))
+        for i in range(len(theta)):
+            for j in range(len(theta)):
+                x = cx[i] - cx[j]
+                y = cy[i] - cy[j]
+                distance = np.sqrt(x**2 + y**2)
+                if abs(distance - r) < 0.1:
+                    # Calculate vector differences
+                    vec_diff_i = theta_vectors[i] - avg_vector
+                    vec_diff_j = theta_vectors[j] - avg_vector
+                    # Use dot product instead of scalar multiplication
+                    a[i, j] = np.dot(vec_diff_i, vec_diff_j)
+                    count[i, j] = 1
+        total_count = np.sum(count)
+        if total_count > 0:
+            c_values[k] = np.sum(a) / total_count
+    return c_values
+
+def gaussian_filter_multiscale_retinex(image: np.ndarray, sigmas: list, weights: list) -> np.ndarray:
+    img32 = image.astype('float32') / 255
+    img32_log = cv.log(img32 + 1)
+    
+    msr = np.zeros(image.shape, np.float32)
+    for sigma, weight in zip(sigmas, weights):
+        blur = cv.GaussianBlur(img32, ksize=(0, 0), sigmaX=sigma)
+        blur_log = cv.log(blur + 1)
+        msr += (img32_log - blur_log) * weight
+    
+    msr /= sum(weights)
+    return cv.normalize(msr, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+
+def process_image(img_path):
+    img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
+    rtnx = gaussian_filter_multiscale_retinex(img, sigmas=[15, 55, 185], weights=[10, 5, 1])
+    thresholded = cv.adaptiveThreshold(rtnx, 255, adaptiveMethod=cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       thresholdType=cv.THRESH_BINARY, blockSize=7, C=-7)
+
+    nb_components, output, stats, _ = cv.connectedComponentsWithStats(thresholded, connectivity=8)
+    sizes = stats[1:, -1]
+    new_img = np.zeros_like(thresholded)
+    new_img[np.isin(output, np.where(sizes >= 12)[0] + 1)] = 255
+
+    numLabels, labels, stats, centroids = cv.connectedComponentsWithStats(new_img)
+    
+    x, y, angles, ellipse_params = [], [], [], []
+    for i in range(1, numLabels):
+        componentMask = (labels == i).astype('uint8')
+        contours, _ = cv.findContours(componentMask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+        if len(contours) > 0 and len(contours[0]) >= 5:
+            ellipse = cv.fitEllipse(contours[0])
+            area, angle = calculate_ellipse_area(*ellipse[0], *ellipse[1], ellipse[2])
+            if area < 250:
+                (cx, cy), (a, b), angle = ellipse
+                x.append(cx)
+                y.append(cy)
+                angles.append(angle)
+                ellipse_params.append(ellipse)
+
+    coordinates = np.column_stack((x, y))
+    dbscan = DBSCAN(eps=40, min_samples=20)
+    labels = dbscan.fit_predict(coordinates)
+
+    cluster_angles = {label: [] for label in set(labels) if label != -1}
+    cluster_coordinates = {label: [] for label in set(labels) if label != -1}
+
+    for i, label in enumerate(labels):
+        if label != -1:
+            cluster_angles[label].append(angles[i])
+            cluster_coordinates[label].append(coordinates[i])
+
+    filtered_cluster_coordinates = {}
+    filtered_cluster_angles = {}
+
+    for label in cluster_angles:
+        filtered_coordinates = []
+        filtered_angles = []
+        for i, angle in enumerate(cluster_angles[label]):
+            if filtered_angles and any(abs(angle - other_angle) <= 20 for j, other_angle in enumerate(cluster_angles[label]) if i != j):
+                filtered_coordinates.append(cluster_coordinates[label][i])
+                filtered_angles.append(angle)
+            elif not filtered_angles:
+                filtered_coordinates.append(cluster_coordinates[label][i])
+                filtered_angles.append(angle)
+        filtered_cluster_coordinates[label] = filtered_coordinates
+        filtered_cluster_angles[label] = filtered_angles
+
+    max_contours_label = max(filtered_cluster_coordinates, key=lambda k: len(filtered_cluster_coordinates[k]))
+
+    if max_contours_label is not None:
+        coords = np.array(filtered_cluster_coordinates[max_contours_label])
+        theta = np.array(filtered_cluster_angles[max_contours_label])
+        cy, cx = coords[:, 1], coords[:, 0]
+        
+        average_angle = np.mean(theta)
+        r_values = np.arange(0, 100, 0.1)
+        c_values = calculate_correlation(cx, cy, theta, average_angle, r_values)
+        
+        c_value_at_r_zero = c_values[0]
+        if c_value_at_r_zero != 0:
+            c_values /= c_value_at_r_zero
+        
+        return r_values, c_values
+    
+    return None, None
+
+if __name__ == "__main__":
+    start_time = time.time()
+
+    folder_path = "/Users/yahya2/Desktop/Original image, frame by frame copy/"
+    image_paths = [os.path.join(folder_path, filename) for filename in os.listdir(folder_path) 
+                   if filename.lower().endswith((".jpg", ".png", ".jpeg"))]
+
+    r_values_all = []
+    c_values_all = []
+
+    for img_path in image_paths:
+        r_values, c_values = process_image(img_path)
+        if r_values is not None and c_values is not None:
+            r_values_all.extend(r_values)
+            c_values_all.extend(c_values)
+
+    grouped_dict = {}
+    for r, c in zip(r_values_all, c_values_all):
+        closest_key = min(grouped_dict.keys(), key=lambda x: abs(x - r), default=None) if grouped_dict else None
+        if closest_key is not None and abs(closest_key - r) == 0:
+            grouped_dict[closest_key].append(c)
+        else:
+            grouped_dict[r] = [c]
+
+    averaged_dict = {k: np.mean(v) for k, v in grouped_dict.items()}
+    r_values_grouped = list(averaged_dict.keys())
+    c_values_grouped = list(averaged_dict.values())
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(r_values_grouped, c_values_grouped, label='Averaged data')
+    plt.xlabel('r')
+    plt.ylabel('Normalized c')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    end_time = time.time()
+    print(f"Total execution time: {end_time - start_time:.2f} seconds")
