@@ -1,0 +1,208 @@
+import cv2 as cv
+import numpy as np
+from numpy.typing import NDArray
+import math
+from scipy import ndimage
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn import metrics
+from sklearn.datasets import make_blobs
+from sklearn.preprocessing import StandardScaler
+from sklearn import datasets
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+
+
+def gaussian_filter_multiscale_retinex(image: NDArray, sigmas: list[float], weights: list[float]) -> NDArray:
+    # Information on Retinex theory https://en.wikipedia.org/wiki/Color_constancy#Retinex_theory
+    # In our use case here, Retinex should serve to highlight the bacteria
+
+    # Smaller values for sigmas will result in lower dynamic range, but stronger edges
+    # To make an image with a good balance of edge enhancement and color preservation
+    # Use a range of sigmas, and weight the smaller ones higher (ex: sigmas=[15, 55, 85], weights=[10, 5, 1])
+
+    # Convert the image to an array of floats scaled between 0 and 1
+    img32 = image.astype('float32') / 255
+
+    # Take the log of the image
+    img32_log = cv.log(img32 + 1)
+    # img32_log = np.log(img32+1) #numpy offers different methods for logarithms of different bases, but it's slower than OpenCV
+
+    msr = np.zeros(image.shape, np.float32)
+    for sigma, weight in zip(sigmas, weights):
+        # Different filters can be used for different results. Gaussian filters are the most common and easy to implement,
+        # but I've had the best results with guided filters, however they require an additional parameter (epsilon), so for
+        # simplicity's sake, I'm using a gaussian filter
+        blur = cv.GaussianBlur(img32, ksize=(0, 0), sigmaX=sigma)
+        blur_log = cv.log(blur + 1)
+
+        ssr = cv.subtract(img32_log, blur_log)
+        ssr = cv.multiply(ssr, weight)
+
+        msr = cv.add(msr, ssr)
+
+    msr = cv.divide(msr, sum(weights))
+
+    # Normalization because it shouldn't matter here and I don't want to spend a bunch of time figuring out
+    # appropriate gain/bias values
+    msr = cv.normalize(msr, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    return msr
+def calculate_ellipse_area(ellipse):
+    """
+    Calculates the area of an ellipse given its parameters.
+    """
+    (cx, cy), (a, b), angle = ellipse
+    semi_major_axis = a / 2
+    semi_minor_axis = b / 2
+    area = math.pi * semi_major_axis * semi_minor_axis
+    return area, angle
+
+img1path = "/Users/yahya2/Desktop/Original image, frame by frame/plot_ezgif-frame-02.png"
+idx = 0
+count1 = 0
+ellipse_areas = []
+
+for imgpath in [img1path]:
+    idx += 1
+    img = cv.imread(imgpath)
+    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    rtnx = gaussian_filter_multiscale_retinex(gray, sigmas=[15, 55, 185], weights=[10, 5, 1])
+    thresholded = cv.adaptiveThreshold(rtnx, 255, adaptiveMethod=cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        thresholdType=cv.THRESH_BINARY, blockSize=7, C=-7)
+
+    # Get the connected components and their statistics
+    nb_components, output, stats, _ = cv.connectedComponentsWithStats(thresholded, connectivity=8)
+    sizes = stats[1:, -1]  # Get the area (number of pixels) of each component, excluding the background component
+
+    # Create a new image with small components removed
+    new_img = np.zeros_like(thresholded)
+    for i in range(0, nb_components - 1):
+        if sizes[i] >= 12:  # Keep components with 4 or more pixels
+            new_img[output == i + 1] = 255  # Assign the component to the new image
+
+    blank_image = np.zeros_like(img, dtype=np.uint8)
+    connected_components = cv.connectedComponentsWithStats(new_img)
+    (numLabels, labels, stats, centroids) = connected_components
+
+x = []
+y = []
+angles = []
+count1 = 0
+ellipse_areas = []
+ellipses = []  # New list to store ellipse information
+
+for i in range(1, numLabels):
+    componentMask = (labels == i).astype('uint8')
+    contours, _ = cv.findContours(componentMask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+    if len(contours) > 0:
+        cnt = contours[0]
+        if len(cnt) >= 5:
+            ellipse = cv.fitEllipse(cnt)
+            area, angle = calculate_ellipse_area(ellipse)
+            if area < 250:  # Change this value to adjust the area filter
+                count1 += 1
+                ellipse_areas.append(area)
+                cv.ellipse(blank_image, ellipse, (0, 255, 0), 1)
+                
+                # Store the center coordinates and angle
+                (cx, cy), (a, b), angle = ellipse
+                x.append(cx)
+                y.append(cy)
+                angles.append(angle)
+                ellipses.append(ellipse)  # Store the ellipse information
+# Convert lists to numpy arrays
+coordinates = np.column_stack((x, y))
+
+# Apply DBSCAN
+eps = 40 # Adjust this value based on the scale of your image and desired cluster size
+min_samples = 21 # Adjust this value based on the minimum number of ellipses you want in a cluster
+db = DBSCAN(eps=eps, min_samples=min_samples).fit(coordinates)
+
+# Get the labels and number of clusters
+labels = db.labels_
+n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+
+# Create a dictionary to store (contour_index, angle) for each cluster
+cluster_angles = {i: [] for i in range(n_clusters)}
+cluster_angles[-1] = []  # For noise points
+
+# Assign (contour_index, angle) to their respective clusters
+for contour_index, (label, angle) in enumerate(zip(labels, angles)):
+    cluster_angles[label].append((contour_index, angle))
+import math
+
+def angle_difference(angle1, angle2):
+    diff = abs(angle1 - angle2)
+    return min(diff, 180 - diff)
+
+# Create a new dictionary to store the refined clusters
+refined_cluster_angles = {}
+
+for cluster, angle_data in cluster_angles.items():
+    if cluster == -1:  # Skip noise points
+        continue
+    
+    refined_cluster = []
+    for i, (contour_index1, angle1) in enumerate(angle_data):
+        has_close_neighbor = False
+        for j, (contour_index2, angle2) in enumerate(angle_data):
+            if i != j and angle_difference(angle1, angle2) <= 100:
+                has_close_neighbor = True
+                break
+        
+        if has_close_neighbor:
+            refined_cluster.append((contour_index1, angle1))
+    
+    if refined_cluster:  # Only add the cluster if it's not empty
+        refined_cluster_angles[cluster] = refined_cluster
+
+# Create a new image to draw the contours and clusters
+contour_image = np.zeros_like(img)
+
+# Generate a list of distinct colors for each cluster
+num_clusters = len(refined_cluster_angles)
+colors = plt.cm.rainbow(np.linspace(0, 1, num_clusters))
+colors = (colors[:, :3] * 255).astype(int)
+
+# Create a dictionary to map cluster numbers to colors
+cluster_colors = {cluster: colors[i].tolist() for i, cluster in enumerate(refined_cluster_angles.keys())}
+
+# Draw the ellipses with color coding
+for cluster, angle_data in refined_cluster_angles.items():
+    color = cluster_colors[cluster]
+    for contour_index, angle in angle_data:
+        ellipse = ellipses[contour_index]
+        cv.ellipse(contour_image, ellipse, color, 2)
+
+# Draw circles and add text labels at the centers of the clusters
+for i, (cluster, angle_data) in enumerate(refined_cluster_angles.items(), 1):
+    center_x, center_y = np.mean([(ellipses[contour_index][0][0], ellipses[contour_index][0][1]) 
+                                  for contour_index, angle in angle_data], axis=0)
+    
+    # Draw white circle with colored border
+    cv.circle(contour_image, (int(center_x), int(center_y)), 15, (255, 255, 255), -1)
+    cv.circle(contour_image, (int(center_x), int(center_y)), 15, cluster_colors[cluster], 2)
+    
+    # Add cluster number as text
+    cv.putText(contour_image, str(i), (int(center_x) - 7, int(center_y) + 7), 
+               cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
+# Create a legend
+legend_elements = [Patch(facecolor=np.array(color)/255, edgecolor='black', label=f'Cluster {i}') 
+                   for i, (cluster, color) in enumerate(cluster_colors.items(), 1)]
+
+# Display the image with legend
+plt.figure(figsize=(12, 8))
+plt.imshow(cv.cvtColor(contour_image, cv.COLOR_BGR2RGB))
+plt.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5))
+plt.title('Color-coded Ellipses and Numbered Clusters')
+plt.axis('off')
+plt.tight_layout()
+plt.show()
+
+# If you want to display using OpenCV as well
+cv.imshow('Ellipses and Numbered Clusters', contour_image)
+cv.waitKey(0)
+cv.destroyAllWindows()
